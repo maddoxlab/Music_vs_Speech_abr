@@ -16,18 +16,6 @@ import os
 from scipy.io import wavfile
 import mne
 
-##opath = '/home/rkmaddox/Downloads/tong_stimuli/'
-#opath = '/home/tong/Downloads/'
-#m, fs = read_wav(opath + 'acoustic000.wav')
-#x, fs = read_wav(opath + 'acoustic001.wav')
-#x = x[0]
-#m = m[0]
-#nfft = int(fs/1) + 1
-#ff, tt, X = spectrogram(x, fs=fs, nfft=nfft, noverlap=0, nperseg=nfft)
-#ff, tt, M = spectrogram(m, fs=fs, nfft=nfft, noverlap=0, nperseg=nfft)
-#m_amp = (M ** 2).mean(-1) ** 0.5
-#x_amp = (X ** 2).mean(-1) ** 0.5
-
 # Parameters
 
 nep_mus = 48
@@ -38,7 +26,7 @@ dur = 60
 len_mus = dur*fs
 n_epoch = 8
 
-fullset_path = '/media/tong/Elements/AMPLab/MusicABR/diverse_dataset/Muspeech_Dataset_2020_2/'
+fullset_path = '/Muspeech_Dataset_2020_2/'
 music_path = fullset_path + 'music/'
 speech_path = fullset_path + 'speech/'
 
@@ -63,17 +51,8 @@ for k in range(len(speech_gen)):
                             speech_gen[k] + '00' + str(i) + '.wav')
         speech_sig[k*n_epoch+i, :] = temp
 
-#nfft = int(fs/1) + 1
-#M = np.zeros((n_epoch, int(fs/2+1), 59))
-#S = np.zeros((n_epoch, int(fs/2+1), 59))
-#
-#for i in range(n_epoch):
-#    ff, tt, M[i, :, :] = spectrogram(music_sig[i,:], fs=fs, nfft=nfft, noverlap=0, nperseg=nfft)
-#for i in range(n_epoch):
-#    ff, tt, S[i, :, :] = spectrogram(speech_sig[i,:], fs=fs, nfft=nfft, noverlap=0, nperseg=nfft)
 
 # %% try splitting into third octave bands
-
 
 def split_bands(x, order=6):
     hp_freqs = 2 ** np.arange(np.log2(50), np.log2(fs / 2), 1 / 3.)
@@ -86,19 +65,24 @@ def split_bands(x, order=6):
     x_bands[:-1] = x_bands[:-1] - x_bands[1:]
     return x_bands
 
-
+# %% Spectral matching
 music_bands_var = np.zeros((28,))
 speech_bands_var = np.zeros((28,))
+# Averaged variance for each band
+# Music
 for i in range(nep_mus):
     music_bands_var = music_bands_var + np.reshape(np.var(split_bands(music_sig[i, :]), axis=-1, keepdims=True), -1)
 music_bands_var_av = music_bands_var/nep_mus
+# Speech
 for i in range(nep_sp):
     speech_bands_var = speech_bands_var + np.reshape(np.var(split_bands(speech_sig[i, :]), axis=-1, keepdims=True), -1)
 speech_bands_var_av = speech_bands_var/nep_mus
-
+# Overall averaged variance
 all_bands_var_av = (music_bands_var_av + speech_bands_var_av) / 2
 all_bands_var_av = np.reshape(all_bands_var_av, (28, 1))
 
+# Matching each band variance of each stim with the average band variance
+# Music 
 for i in range(nep_mus):
     music_bands_new = split_bands(music_sig[i, :]) * (all_bands_var_av / np.var(split_bands(music_sig[i, :]), axis=-1, keepdims=True)) ** 0.5
     music_new = music_bands_new.sum(0)
@@ -107,7 +91,7 @@ for i in range(nep_mus):
                   music_gen[i//n_epoch] + '/' + music_gen[i//n_epoch] +
                   '00' + str(i % n_epoch) + '.wav',
                   fs_out, music_new)
-
+# Speech
 for i in range(nep_sp):
     speech_bands_new = split_bands(speech_sig[i, :]) * (all_bands_var_av / np.var(split_bands(speech_sig[i, :]), axis=-1, keepdims=True)) ** 0.5
     speech_new = speech_bands_new.sum(0)
@@ -116,16 +100,3 @@ for i in range(nep_sp):
                   speech_gen[i//n_epoch] + '/' + speech_gen[i//n_epoch] +
                   '00' + str(i % n_epoch) + '.wav',
                   fs_out, speech_new)
-
-
-#
-#x_bands = split_bands(x)
-#m_bands = split_bands(m)
-#y_bands = x_bands * (np.var(m_bands, axis=-1, keepdims=True) /
-#                     np.var(x_bands, axis=-1, keepdims=True)) ** 0.5
-#y = y_bands.sum(0)
-#ff, tt, Y = spectrogram(y, fs=fs, nfft=nfft, noverlap=0, nperseg=nfft)
-#y_amp = (Y ** 2).mean(-1) ** 0.5
-#plt.plot(ff, 20 * np.log10(m_amp))
-## plt.plot(ff, 20 * np.log10(x_amp))
-#plt.plot(ff, 20 * np.log10(y_amp))

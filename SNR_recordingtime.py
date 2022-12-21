@@ -7,6 +7,7 @@ Created on Tue Jul 19 16:58:03 2022
 """
 
 import numpy as np
+import pandas as pd
 import scipy.signal as signal
 from numpy.fft import irfft, rfft, fft, ifft
 import matplotlib.pyplot as plt
@@ -104,18 +105,32 @@ subject_list = ['subject001', 'subject002', 'subject003', 'subject004' ,
                 'subject018', 'subject019', 'subject020', 'subject022',
                 'subject023', 'subject024']
 subject_list_2 = ['subject003', 'subject019']
+subject_ids=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19,
+             20, 22, 23, 24]
 subject_num = len(subject_list)
+
+# %%
 music_types = ["acoustic", "classical", "hiphop", "jazz", "metal", "pop"]
 speech_types = ["chn_aud", "eng_aud", "interview", "lecture", "news", "talk"]
 
-regressor='ANM'
-
+# %% File paths
+bids_root = '/Music_vs_Speech_ABR/' # EEG-BIDS root path
+audio_file_root = '/present_files/' # Present files waveforms root path
+regressor_root = '/regressors/' # Regressor files root path
+# %% Regressor
+"""
+Change this variables among three regressors ["rect", "IHC", "ANM"] for 
+half-wave rectified stimulus wavefors, IHC and ANM
+"""
+regressor = "ANM" 
+# %% Place holder for SNRs
 snr_music = np.zeros((subject_num, n_epoch_cat))
 snr_music_bp = np.zeros((subject_num, n_epoch_cat))
 snr_speech = np.zeros((subject_num, n_epoch_cat))
 snr_speech_bp = np.zeros((subject_num, n_epoch_cat))
+
 #%% START LOOPING SUBJECTS
-for subject in subject_list:
+for subject, subject_id in zip(subject_list, subject_ids):
     start_time = time.time()
     si = subject_list.index(subject)
     #%% DATA NEED TO COMPUTE
@@ -124,18 +139,17 @@ for subject in subject_list:
 
     abr_speech = np.zeros((n_epoch_cat, 8000))
     abr_speech_bp = np.zeros((n_epoch_cat, 8000))
-    # %% Loading and filtering TRUE EEG data
-    eeg_path = "/media/tong/Elements/AMPLab/MusicABR/diverse_dataset/music_abr_diverse_beh/" + subject
+    # %% Loading and filtering EEG data
     if subject in subject_list_2:
-        eeg_vhdr = eeg_path + "/music_diverse_beh_" + subject[-3:] + "_1.vhdr"
+        run = '02'
+        eeg_vhdr = bids_root + 'sub-'+f'{subject_id:02}'+'/eeg/'+'sub-'+f'{subject_id:02}'+'_task-MusicvsSpeech_run-'+run+'_eeg.vhdr'
     else:
-        eeg_vhdr = eeg_path + "/music_diverse_beh_" + subject[-3:] + ".vhdr"
-    
-    eeg_raw = mne.io.read_raw_brainvision(str(eeg_vhdr), preload=True)
+        eeg_vhdr = bids_root + 'sub-'+f'{subject_id:02}'+'/eeg/'+'sub-'+f'{subject_id:02}'+'_task-MusicvsSpeech_eeg.vhdr'
+    eeg_raw = mne.io.read_raw_brainvision(eeg_vhdr, preload=True)
     if is_ABR:
         channels = ['EP1', 'EP2']
     eeg_raw = eeg_raw.pick_channels(channels)
-    # Read Events
+    # Read Events, correct for tube delay
     events, event_dict = mne.events_from_annotations(eeg_raw)
     events_2trig = np.zeros((0, 3)).astype(int)
     events_new = np.zeros((1, 3)).astype(int)
@@ -152,49 +166,51 @@ for subject in subject_list:
             events_new[i, 2] = 1
         else:
             events_new[i, 2] = 2
-    
     # Correct fs_eeg
-    time_diff = events_2trig[10:, 0] - events_new[10:, 0]
-    eeg_fs_n = np.mean(time_diff)/11.98
-    eeg_fs_n = 10000.25
+    if subject in subject_list_2:
+        time_diff = events_2trig[:480, 0] - events_new[0:480, 0]
+    else:
+        time_diff = events_2trig[10:490, 0] - events_new[10:490, 0]
+    eeg_fs_n = round(np.mean(time_diff)/(12-0.02), 2)
     
     # EEG Preprocessing
     print('Filtering raw EEG data...')
     # High-pass filter
     eeg_raw._data = butter_highpass_filter(eeg_raw._data, eeg_f_hp, eeg_fs_n)
-    
     # Notch filter
-    notch_freq = np.arange(60, 301, 120)
+    notch_freq = np.arange(60, 180, 540)
     notch_width = 5
-    
     for nf in notch_freq:
         bn, an = signal.iirnotch(nf / (eeg_fs_n / 2.), float(nf) / notch_width)
         eeg_raw._data = signal.lfilter(bn, an, eeg_raw._data)
     # %% Epoch params
     # general experiment
     n_type_music = 6  # number of music types
-    n_type_speech = 6  # number of speech type
+    n_type_speech = 6  # number of speech types
+    n_epoch = 40  # number of epoch in each type
     n_epoch_total = (n_type_music + n_type_speech) * n_epoch
     
-    tab_path = '/media/tong/Elements/AMPLab/MusicABR/diverse_dataset/music_abr_diverse_beh/subject005/005_2021-06-14 15_41_08.295636.tab'
-    tab = read_tab(tab_path, group_start='trial_id',
-                   group_end=None, return_params=False)
+    if subject in subject_list_2:
+        run = '02'
+        events_file_name = bids_root + 'sub-'+f'{subject_id:02}'+'/eeg/'+'sub-'+f'{subject_id:02}'+'_task-MusicvsSpeech_run-'+run+'_events.tsv'
+        start_trial = 0
+    else:
+        events_file_name = bids_root + 'sub-'+f'{subject_id:02}'+'/eeg/'+'sub-'+f'{subject_id:02}'+'_task-MusicvsSpeech_events.tsv'
+        start_trial = 10
+    events_df = pd.read_csv(events_file_name, sep='\t')
     file_all_list = []
-    type_list = []
     cat_list = []
-    for ti in np.arange(10, len(tab)):
-        type_name = tab[ti]['trial_id'][0][0].split(",")[2].split(": ")[1]
-        type_list += [type_name]
+    for ti in np.arange(start_trial, len(events_df)):
+        type_name = events_df['trial_type'][ti]
         if type_name in music_types:
             cat_list += ["music"]
         elif type_name in speech_types:
             cat_list += ["speech"]
-        piece = tab[ti]['trial_id'][0][0].split(",")[3].split(": ")[1]
-        file_all_list += [type_name + piece]
-    
+        piece =  events_df['number_trial'][ti]
+        file_all_list += [type_name + f'{piece:03}']
     music_ind = [i for i, x in enumerate(cat_list) if x == "music"]
     speech_ind = [i for i, x in enumerate(cat_list) if x == "speech"]
-        # Epoching
+    # Epoching
     print('Epoching EEG data...')
     epochs = mne.Epochs(eeg_raw, events, event_id=1, tmin=0,
                         tmax=(t_mus - 1/stim_fs + 1),
@@ -211,7 +227,7 @@ for subject in subject_list:
     speech_file_list = [file_all_list[i] for i in speech_ind]
     
     # %% Deriving ABR for different number of epochs
-    x_in_path = '/media/tong/Elements/AMPLab/MusicABR/diverse_dataset/music_abr_diverse_beh/present_files/' + regressor + '/'
+    x_in_path = regressor_root + regressor + '/'
     t_start = -0.2
     t_stop = 0.6
     lags = np.arange(start=t_start*1000, stop=t_stop*1000, step=1e3/eeg_fs)
@@ -312,13 +328,13 @@ for subject in subject_list:
         
         print("RUN--- %s seconds ---" % (time.time() - start_time))
 
-    write_hdf5(eeg_path + '/' + subject + '_abr_response_reg' + regressor + '_by_numEpoch.hdf5',
-               dict(abr_music=abr_music, abr_music_bp=abr_music_bp, 
-                    abr_speech=abr_speech, abr_speech_bp=abr_speech_bp,lags=lags), overwrite=True)
+    # write_hdf5('/' + subject + '_abr_response_reg' + regressor + '_by_numEpoch.hdf5',
+    #            dict(abr_music=abr_music, abr_music_bp=abr_music_bp, 
+    #                 abr_speech=abr_speech, abr_speech_bp=abr_speech_bp,lags=lags), overwrite=True)
     
     print("SUBJECT TIME--- %s seconds ---" % (time.time() - start_time))
     
-write_hdf5("/media/tong/Elements/AMPLab/MusicABR/diverse_dataset/music_abr_diverse_beh/abr_snr_"+regressor+"_by_numEpoch.hdf5",
-           dict(snr_music=snr_music, snr_music_bp=snr_music_bp,
-                snr_speech=snr_speech, snr_speech_bp=snr_speech_bp), overwrite=True)
+# write_hdf5("/media/tong/Elements/AMPLab/MusicABR/diverse_dataset/music_abr_diverse_beh/abr_snr_"+regressor+"_by_numEpoch.hdf5",
+#            dict(snr_music=snr_music, snr_music_bp=snr_music_bp,
+#                 snr_speech=snr_speech, snr_speech_bp=snr_speech_bp), overwrite=True)
 

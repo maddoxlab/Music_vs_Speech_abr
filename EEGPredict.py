@@ -10,18 +10,7 @@ Created on Tue Nov 23 09:49:29 2021
 
 import numpy as np
 import scipy.signal as signal
-from numpy.fft import irfft, rfft, fft, ifft
-import matplotlib.pyplot as plt
-import h5py
-import scipy.stats as stats
-
-from expyfun.io import read_wav, read_tab
 from expyfun.io import write_hdf5, read_hdf5
-import mne
-
-
-import matplotlib.pyplot as plt
-
 # %% Function
 
 def butter_highpass(cutoff, fs, order=1):
@@ -33,33 +22,6 @@ def butter_highpass(cutoff, fs, order=1):
 
 def butter_highpass_filter(data, cutoff, fs, order=1, axis=-1):
     b, a = butter_highpass(cutoff, fs, order=order)
-    y = signal.lfilter(b, a, data, axis)
-    return y
-
-
-def butter_lowpass(cutoff, fs, order=1):
-    nyq = 0.5 * fs
-    normal_cutoff = cutoff / nyq
-    b, a = signal.butter(order, normal_cutoff, btype='low', analog=False)
-    return b, a
-
-
-def butter_lowpass_filter(data, cutoff, fs, order=1, axis=-1):
-    b, a = butter_lowpass(cutoff, fs, order=order)
-    y = signal.lfilter(b, a, data, axis)
-    return y
-
-
-def butter_bandpass(lowcut, highcut, fs, order=1):
-    nyq = 0.5 * fs
-    low = lowcut / nyq
-    high = highcut / nyq
-    b, a = signal.butter(order, [low, high], btype='band')
-    return b, a
-
-
-def butter_bandpass_filter(data, lowcut, highcut, fs, order=1, axis=-1):
-    b, a = butter_bandpass(lowcut, highcut, fs, order=order)
     y = signal.lfilter(b, a, data, axis)
     return y
 
@@ -101,15 +63,21 @@ subject_list = ['subject001', 'subject002', 'subject003', 'subject004' ,
                 'subject018', 'subject019', 'subject020', 'subject022',
                 'subject023', 'subject024']
 subject_list_2 = ['subject003', 'subject019']
-exp_path = '/media/tong/Elements/AMPLab/MusicABR/diverse_dataset/music_abr_diverse_beh/'
+exp_path = '/music_speeech_abr/'
 subject_data_path = [exp_path + i + '/' for i in subject_list]
 subject_num = len(subject_list)
 
 music_types = ["acoustic", "classical", "hiphop", "jazz", "metal", "pop"]
 speech_types = ["chn_aud", "eng_aud", "interview", "lecture", "news", "talk"]
-
-# %% LOADING KERNELS 
-regressor = 'rec'
+# %% Regressor
+"""
+Change this variables among three regressors ["rect", "IHC", "ANM"] for 
+half-wave rectified stimulus wavefors, IHC and ANM
+"""
+regressor_root = '/regressors/' # Regressor files root path
+regressor = "rect" 
+# %% LOADING ABR KERNELS 
+time_range = [0, 250]
 # Music 
 abr_music_ave = np.zeros((subject_num, 8000))
 for si in range(subject_num):
@@ -122,11 +90,11 @@ for si in range(subject_num):
     abr_music_ave[si, :] = abr_music_ave_cs / len(music_types)
 
 abr_music_ave_class = np.average(abr_music_ave, axis=0)
-# shift back 3.4 ms
-abr_music_ave_class_shift = np.roll(abr_music_ave_class, int(-3.4*eeg_fs/1000))
-time_vec, abr_music_ave_kernel = get_abr_range(abr_music_ave_class_shift, lags, [0, 250])
-
-#plt.plot(time_vec, abr_music_ave_kernel)
+if regressor in ["IHC", "ANM"]:
+    # shift back 2.75 ms
+    abr_music_ave_class_shift = np.roll(abr_music_ave_class, int(-2.75*eeg_fs/1000))
+    
+time_vec, abr_music_ave_kernel = get_abr_range(abr_music_ave_class_shift, lags,time_range)
     
 abr_speech_ave = np.zeros((subject_num, 8000))
 for si in range(subject_num):
@@ -138,15 +106,17 @@ for si in range(subject_num):
     abr_speech_ave[si, :] = abr_speech_ave_cs / len(speech_types)
 
 abr_speech_ave_class = np.average(abr_speech_ave, axis=0)
-# shift back 3.4 ms
-abr_speech_ave_class_shift = np.roll(abr_speech_ave_class, int(-3.4*eeg_fs/1000))
-time_vec, abr_speech_ave_kernel = get_abr_range(abr_speech_ave_class_shift, lags, [0, 250])
+if regressor in ["IHC", "ANM"]:
+    # shift back 2.75 ms
+    abr_speech_ave_class_shift = np.roll(abr_speech_ave_class, int(-2.75*eeg_fs/1000))
+# Get ABR kernel in specific time range [0, 250] ms
+time_vec, abr_speech_ave_kernel = get_abr_range(abr_speech_ave_class_shift, lags, time_range)
 
-#plt.plot(time_vec, abr_speech_ave_kernel)
 abr_overall_kernel = (abr_music_ave_kernel + abr_speech_ave_kernel) / 2
-# %% LOADING REGRESSORS
+# %% LOADING REGRESSORS AND DO CONVOLUTION
 overall = True
-ANM_path = '/media/tong/Elements/AMPLab/MusicABR/diverse_dataset/music_abr_diverse_beh/present_files/' + regressor + '/'
+regressor_path = regressor_root + regressor + '/'
+# Set up ABR kernel range to use in convolution, time_range = [0, 250] ms
 t_start = 0
 t_stop = 0.25
 # Music
@@ -171,28 +141,10 @@ out_music_predicted = dict(acoustic=np.zeros((n_epoch, len_eeg)),
 
 for ti in music_types:
     print(ti)
-    data = read_hdf5(ANM_path + 'music_x_in.hdf5')
+    data = read_hdf5(regressor_path + 'music_x_in.hdf5')
     # Load x_in
     x_in_pos = data['x_in_music_pos'][ti]
     x_in_neg = data['x_in_music_neg'][ti]
-    
-#    #### convolution ####
-#    #zero padding x_in
-#    before_zero_sig = np.zeros((n_epoch, int(abs(t_start*eeg_fs))+1))
-#    after_zero_sig = np.zeros((n_epoch, int(abs(t_stop*eeg_fs))))
-#    x_in_pos_pad = np.concatenate((before_zero_sig, x_in_pos, after_zero_sig), axis=1)
-#    x_in_neg_pad = np.concatenate((before_zero_sig, x_in_neg, after_zero_sig), axis=1)
-#    x_out_pos = np.zeros(x_in_pos.shape)
-#    x_out_neg = np.zeros(x_in_neg.shape)
-#    x_predict = np.zeros(x_in_neg.shape)
-#    # convolve
-#    for ei in range(n_epoch):
-#        x_out_pos[ei, :] = signal.convolve(x_in_pos_pad[ei, :], abr_music_ave_kernel, mode='valid')
-#        x_out_neg[ei, :] = signal.convolve(x_in_neg_pad[ei, :], abr_music_ave_kernel, mode='valid')
-#        x_predict[ei, :] = (x_out_pos[ei, :] + x_out_neg[ei, :]) / 2
-#    out_music_pos[ti] = x_out_pos
-#    out_music_neg[ti] = x_out_neg
-#    out_music_predicted[ti] = x_predict
     
     #### fft ####
     # zero pad kernels
@@ -235,28 +187,10 @@ out_speech_predicted = dict(chn_aud=np.zeros((n_epoch, len_eeg)),
                             talk=np.zeros((n_epoch, len_eeg)))
 for ti in speech_types:
     print(ti)
-    data = read_hdf5(ANM_path + 'speech_x_in.hdf5')
+    data = read_hdf5(regressor_path + 'speech_x_in.hdf5')
     # Load x_in
     x_in_pos = data['x_in_speech_pos'][ti]
     x_in_neg = data['x_in_speech_neg'][ti]
-    
-#    # convolution
-#    #zero padding x_in
-#    before_zero_sig = np.zeros((n_epoch, int(abs(t_start*eeg_fs))-1))
-#    after_zero_sig = np.zeros((n_epoch, int(abs(t_stop*eeg_fs))))
-#    x_in_pos_pad = np.concatenate((before_zero_sig, x_in_pos, after_zero_sig), axis=1)
-#    x_in_neg_pad = np.concatenate((before_zero_sig, x_in_neg, after_zero_sig), axis=1)
-#    x_out_pos = np.zeros(x_in_pos.shape)
-#    x_out_neg = np.zeros(x_in_neg.shape)
-#    x_predict = np.zeros(x_in_neg.shape)
-#    # convolve
-#    for ei in range(n_epoch):
-#        x_out_pos[ei, :] = signal.convolve(x_in_pos_pad[ei, :], abr_speech_ave_kernel, mode='valid')
-#        x_out_neg[ei, :] = signal.convolve(x_in_neg_pad[ei, :], abr_speech_ave_kernel, mode='valid')
-#        x_predict[ei, :] = (x_out_pos[ei, :] + x_out_neg[ei, :]) / 2
-#    out_speech_pos[ti] = x_out_pos
-#    out_speech_neg[ti] = x_out_neg
-#    out_speech_predicted[ti] = x_predict
     
     #### fft ####
     # zero pad kernels
@@ -278,11 +212,12 @@ for ti in speech_types:
     out_speech_neg[ti] = x_out_neg
     out_speech_predicted[ti] = x_predict
 
-predicted_eeg_path = '/media/tong/Elements/AMPLab/MusicABR/diverse_dataset/music_abr_diverse_beh/predicted_eeg/'
-write_hdf5(predicted_eeg_path + regressor + '_predict_x_out_overall.hdf5',
-           dict(out_music_pos=out_music_pos, out_music_neg=out_music_neg, 
-                out_music_predicted=out_music_predicted,
-                out_speech_pos=out_speech_pos, out_speech_neg=out_speech_neg,
-                out_speech_predicted=out_speech_predicted),
-                overwrite=True)
+# %% Save files
+predicted_eeg_path = '/predicted_eeg/'
+# write_hdf5(predicted_eeg_path + regressor + '_predict_x_out_overall.hdf5',
+#            dict(out_music_pos=out_music_pos, out_music_neg=out_music_neg, 
+#                 out_music_predicted=out_music_predicted,
+#                 out_speech_pos=out_speech_pos, out_speech_neg=out_speech_neg,
+#                 out_speech_predicted=out_speech_predicted),
+#                 overwrite=True)
 
