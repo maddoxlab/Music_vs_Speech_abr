@@ -6,7 +6,7 @@ The EEG-BIDS format data for the paper are available on openneuro: https://openn
 ## Stimuli preprocessing
 - `stim_preproc.py`: music and speech stimulus preprocessing, including converting, trimming the silence, flatten the music envelope.
 - `spectral_matching_bandpower.py`: script for the spectral matching procesing.
-## Regressor generateion
+## Regressor generation
 - `rectified_regressor_gen.py`: script for generating half-wave rectified stimulus waveform as the regressor.
 - `IHC_ANM_regressor_gen.py`: script for generating IHC and ANM regressor. These files must be downloaded before the code can work: 
     - Code: 2018 Model: Cochlea+OAE+AN+ABR+EFR (Matlab/Python) from https://www.waves.intec.ugent.be/members/sarah-verhulst (this is for the `ic_cn2018` module) 
