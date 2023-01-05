@@ -2,6 +2,9 @@
 This repository is the code for the article "Music and Speech Elicit Similar Subcortical Responses" by Shan et al (2022) (https://doi.org/10.1101/2022.10.14.512309).
 
 The EEG-BIDS format data for the paper are available on openneuro: https://openneuro.org/datasets/ds004356/versions/1.0.0
+### Prerequisite Libraries
+- `mne`
+- `expyfun`
 
 ## Stimuli preprocessing
 - `stim_preproc.py`: music and speech stimulus preprocessing, including converting, trimming the silence, flatten the music envelope.
