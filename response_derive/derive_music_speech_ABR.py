@@ -4,6 +4,11 @@
 Created on Tue May  4 14:36:02 2021
 
 @author: tong
+@contributor: fotisdr
+
+This script is used for deriving ABR using deconvolution with different regressors.
+The regressors (half-wave rectified stimulus waveform, IHC, and ANM) were pre-generated.
+(refer to rectified_regressor_gen.py and IHC_ANM_regressor_gen.py)
 """
 
 import numpy as np
@@ -12,20 +17,15 @@ import scipy.signal as signal
 from numpy.fft import fft, ifft
 from expyfun.io import write_hdf5, read_hdf5
 import mne
+import os
+import matplotlib.pyplot as plt
 
-"""
-This script is used for deriving ABR using deconvolution with different regressors.
-The regressors (half-wave rectified stimulus waveform, IHC, and ANM) were pre-generated.
-(refer to rectified_regressor_gen.py and IHC_ANM_regressor_gen.py)
-"""
 # %% Define Filtering Functions
-
 def butter_highpass(cutoff, fs, order=1):
     nyq = 0.5 * fs
     normal_cutoff = cutoff / nyq
     b, a = signal.butter(order, normal_cutoff, btype='high', analog=False)
     return b, a
-
 
 def butter_highpass_filter(data, cutoff, fs, order=1):
     b, a = butter_highpass(cutoff, fs, order=order)
@@ -39,28 +39,31 @@ def butter_bandpass(lowcut, highcut, fs, order=1):
     b, a = signal.butter(order, [low, high], btype='band')
     return b, a
 
-
 def butter_bandpass_filter(data, lowcut, highcut, fs, order=1):
     b, a = butter_bandpass(lowcut, highcut, fs, order=order)
     y = signal.lfilter(b, a, data)
     return y
 
-
 # %% Parameters
-# Anlysis
-is_click = True # if derive click ABR
-is_ABR = True # if derive only ABR
+# Analysis
+is_ABR = True # if True, derive only ABR
 Bayesian = True # Bayesian averaging
+correct_tube_delay = False # correct for tube delay (clock drift) - if False, a hard coded value is used
 # Stim param
 stim_fs = 48000 # stimulus sampling frequency
-t_click = 60 # click trial length
 t_mus = 12 # music or speech trial length
 # EEG param
 eeg_n_channel = 2 # total channel of ABR
 eeg_fs = 10000 # eeg sampling frequency
 eeg_f_hp = 1 # high pass cutoff
+# shift params
+IHC_delay = 2.75 # IHC/ANM models
+# time analysis parameters
+t_start = -0.2
+t_stop = 0.6
+t_samples = int((t_stop - t_start) * eeg_fs) # total number of time samples
 #%% Subject
-subject_list = ['subject001', 'subject002', 'subject004' , 'subject003'
+subject_list = ['subject001', 'subject002', 'subject003', 'subject004',
                 'subject005', 'subject006', 'subject007', 'subject008',
                 'subject009', 'subject010', 'subject011', 'subject012',
                 'subject013', 'subject015', 'subject016', 'subject017',
@@ -69,10 +72,22 @@ subject_list = ['subject001', 'subject002', 'subject004' , 'subject003'
 subject_list_2 = ['subject003','subject019'] # subject with 2 eeg runs
 subject_ids=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19,
              20, 22, 23, 24]
+music_types = ["acoustic", "classical", "hiphop", "jazz", "metal", "pop"]
+speech_types = ["chn_aud", "eng_aud", "interview", "lecture", "news", "talk"]
+# general experiment
+n_type_music = len(music_types)  # number of music types
+n_type_speech = len(speech_types)  # number of speech types
+n_epoch = 40  # number of epoch in each type
 # %% File paths
-bids_root = '/Music_vs_Speech_ABR/' # EEG-BIDS root path
-audio_file_root = '/present_files/' # Present files waveforms root path
-regressor_root = '/regressors/' # Regressor files root path
+bids_root = '/hdd/data/ds004356/' # EEG-BIDS root path
+audio_file_root = bids_root + 'stimuli/' # Present files root path
+regressor_root = bids_root + 'regressors/' # Path to extract the regressors
+exp_path = bids_root + 'results/' # Path to extract the ABR results
+regressor_list = ["rect","ANM"] # half-wave rectified stimulus, IHC and ANM regressors
+# Make folder if it doesn't exist
+if not os.path.exists(exp_path):
+    os.mkdir(exp_path)
+    
 # %% Analysis
 for subject, subject_id in zip(subject_list, subject_ids):
     # %% Loading and filtering EEG data
@@ -84,30 +99,36 @@ for subject, subject_id in zip(subject_list, subject_ids):
     eeg_raw = mne.io.read_raw_brainvision(eeg_vhdr, preload=True)
     if is_ABR:
         channels = ['EP1', 'EP2']
-    eeg_raw = eeg_raw.pick_channels(channels)
-    # Read Events, correct for tube delay
+        eeg_raw = eeg_raw.pick_channels(channels)
+    # Read Events
     events, event_dict = mne.events_from_annotations(eeg_raw)
-    events_2trig = np.zeros((0, 3)).astype(int)
-    events_new = np.zeros((1, 3)).astype(int)
-    events_new[0, :] = events[1, :]
-    index = []
-    for i in range(len(events)-1):
-        if events[i, 2] == 2:
-            index += [i]
-            events_2trig = np.append(events_2trig, [events[i, :]], axis=0)
-            events_new = np.append(events_new, [events[i+1, :]], axis=0)
-    events_2trig = np.append(events_2trig, [events[-1, :]], axis=0)
-    for i in range(len(events_new)):
-        if i < 10:
-            events_new[i, 2] = 1
+    if correct_tube_delay:
+        # correct for tube delay
+        events_2trig = np.zeros((0, 3)).astype(int)
+        events_new = np.zeros((1, 3)).astype(int)
+        events_new[0, :] = events[1, :]
+        index = []
+        for i in range(len(events)-1):
+            if events[i, 2] == 2:
+                index += [i]
+                events_2trig = np.append(events_2trig, [events[i, :]], axis=0)
+                events_new = np.append(events_new, [events[i+1, :]], axis=0)
+        events_2trig = np.append(events_2trig, [events[-1, :]], axis=0)
+        for i in range(len(events_new)):
+            if i < 10:
+                events_new[i, 2] = 1
+            else:
+                events_new[i, 2] = 2
+        # Correct fs_eeg
+        if subject in subject_list_2:
+            time_diff = events_2trig[:480, 0] - events_new[0:480, 0]
         else:
-            events_new[i, 2] = 2
-    # Correct fs_eeg
-    if subject in subject_list_2:
-        time_diff = events_2trig[:480, 0] - events_new[0:480, 0]
+            time_diff = events_2trig[10:490, 0] - events_new[10:490, 0]
+        eeg_fs_n = round(np.mean(time_diff)/(12-0.02), 2)
+        print(eeg_fs_n)
     else:
-        time_diff = events_2trig[10:490, 0] - events_new[10:490, 0]
-    eeg_fs_n = round(np.mean(time_diff)/(12-0.02), 2)
+        eeg_fs_n = 10000.25 # approximate value
+        # eeg_fs_n = eeg_fs # use uncorrected value
     
     # EEG Preprocessing
     print('Filtering raw EEG data...')
@@ -121,10 +142,6 @@ for subject, subject_id in zip(subject_list, subject_ids):
         eeg_raw._data = signal.lfilter(bn, an, eeg_raw._data)
 
     # %% Epoch params
-    # general experiment
-    n_type_music = 6  # number of music types
-    n_type_speech = 6  # number of speech types
-    n_epoch = 40  # number of epoch in each type
     n_epoch_total = (n_type_music + n_type_speech) * n_epoch
     
     if subject in subject_list_2:
@@ -151,8 +168,6 @@ for subject, subject_id in zip(subject_list, subject_ids):
     else:
         epoch = epoch[10:490,:]
     # %% Epoch indexing
-    music_types = ["acoustic", "classical", "hiphop", "jazz", "metal", "pop"]
-    speech_types = ["chn_aud", "eng_aud", "interview", "lecture", "news", "talk"]
     types = music_types + speech_types
     eeg_epi = dict(acoustic=np.zeros(n_epoch),
                    classical=np.zeros(n_epoch),
@@ -173,13 +188,10 @@ for subject, subject_id in zip(subject_list, subject_ids):
         eeg_epi[stim_type][stim_ind] = epi
     # %% Analysis 
     # Regressor
-    regressor_list = ['rect', 'IHC', 'ANM'] # half-wave rectified stimulus, IHC and ANM regressors
     for regressor in regressor_list:
         # For music response
         len_eeg = int(t_mus*eeg_fs)
         data = read_hdf5(regressor_root + regressor + '/music_x_in.hdf5')
-        t_start = -0.2
-        t_stop = 0.6
         lags = np.arange(start=t_start*1000, stop=t_stop*1000, step=1e3/eeg_fs)
         
         w_music = dict(acoustic=np.zeros(len_eeg),
@@ -189,16 +201,15 @@ for subject, subject_id in zip(subject_list, subject_ids):
                       metal=np.zeros(len_eeg),
                       pop=np.zeros(len_eeg))
         
-        abr_music = dict(acoustic=np.zeros(8000),
-                        classical=np.zeros(8000),
-                        hiphop=np.zeros(8000),
-                        jazz=np.zeros(8000),
-                        metal=np.zeros(8000),
-                        pop=np.zeros(8000))
+        abr_music = dict(acoustic=np.zeros(t_samples),
+                        classical=np.zeros(t_samples),
+                        hiphop=np.zeros(t_samples),
+                        jazz=np.zeros(t_samples),
+                        metal=np.zeros(t_samples),
+                        pop=np.zeros(t_samples))
         
         for ti in music_types:
             print(ti)
-            n_epoch = 40
             # Load x_in
             x_in_pos = data['x_in_music_pos'][ti]
             x_in_neg = data['x_in_music_neg'][ti]
@@ -207,7 +218,8 @@ for subject, subject_id in zip(subject_list, subject_ids):
         
             for ei in range(n_epoch):
                 eeg_temp = epoch[int(eeg_epi[ti][ei]), :, :]
-                eeg_temp = mne.filter.resample(eeg_temp, down=eeg_fs_n/eeg_fs)
+                if eeg_fs_n != eeg_fs:
+                    eeg_temp = mne.filter.resample(eeg_temp, down=eeg_fs_n/eeg_fs)
                 x_out[ei, :, :] = eeg_temp[:, 0:len_eeg]
             x_out = np.mean(x_out, axis=1)
                 
@@ -215,7 +227,7 @@ for subject, subject_id in zip(subject_list, subject_ids):
             x_in_pos_fft = fft(x_in_pos)
             x_in_neg_fft = fft(x_in_neg)
             # x_out fft
-            x_out_fft = fft(x_out)
+            x_out_fft = fft(x_out)            
             if Bayesian:
                 ivar = 1 / np.var(x_out, axis=1)
                 weight = ivar/np.nansum(ivar)
@@ -234,15 +246,12 @@ for subject, subject_id in zip(subject_list, subject_ids):
             w_music[ti] = (ifft(np.array(w_pos).sum(0)).real +
                           ifft(np.array(w_neg).sum(0)).real) / 2
             abr_music[ti] = np.concatenate((w_music[ti][int(t_start*eeg_fs):],
-                                            w_music[ti][0:int(t_stop*eeg_fs)]))
+                                            w_music[ti][0:int(t_stop*eeg_fs)]))            
             # shift ABR for IHC and ANM regressor
-            if regressor in ['IHC', 'ANM']:
-                abr_music[ti] = np.roll(abr_music[ti], int(2.75*eeg_fs/1000))
-        
+            if ('IHC' in regressor or 'ANM' in regressor) and IHC_delay:
+                abr_music[ti] = np.roll(abr_music[ti], int(IHC_delay*eeg_fs/1000))
         # For speech response
         data = read_hdf5(regressor_root + regressor + '/speech_x_in.hdf5')
-        t_start = -0.2
-        t_stop = 0.6
         lags = np.arange(start=t_start*1000, stop=t_stop*1000, step=1e3/eeg_fs)
         
         w_speech = dict(chn_aud=np.zeros(len_eeg),
@@ -252,16 +261,15 @@ for subject, subject_id in zip(subject_list, subject_ids):
                         news=np.zeros(len_eeg),
                         talk=np.zeros(len_eeg))
         
-        abr_speech = dict(chn_aud=np.zeros(8000),
-                          eng_aud=np.zeros(8000),
-                          interview=np.zeros(8000),
-                          lecture=np.zeros(8000),
-                          news=np.zeros(8000),
-                          talk=np.zeros(8000))
+        abr_speech = dict(chn_aud=np.zeros(t_samples),
+                          eng_aud=np.zeros(t_samples),
+                          interview=np.zeros(t_samples),
+                          lecture=np.zeros(t_samples),
+                          news=np.zeros(t_samples),
+                          talk=np.zeros(t_samples))
         
         for ti in speech_types:
             print(ti)
-            n_epoch = 40
             # Load x_in
             x_in_pos = data['x_in_speech_pos'][ti]
             x_in_neg = data['x_in_speech_neg'][ti]
@@ -269,7 +277,8 @@ for subject, subject_id in zip(subject_list, subject_ids):
             x_out = np.zeros((n_epoch, eeg_n_channel, len_eeg))
             for ei in range(n_epoch):
                 eeg_temp = epoch[int(eeg_epi[ti][ei]), :, :]
-                eeg_temp = mne.filter.resample(eeg_temp, down=eeg_fs_n/eeg_fs)
+                if eeg_fs_n != eeg_fs:
+                    eeg_temp = mne.filter.resample(eeg_temp, down=eeg_fs_n/eeg_fs)
                 x_out[ei, :, :] = eeg_temp[:, 0:len_eeg]
             x_out = np.mean(x_out, axis=1)
             
@@ -298,37 +307,38 @@ for subject, subject_id in zip(subject_list, subject_ids):
             abr_speech[ti] = np.concatenate((w_speech[ti][int(t_start*eeg_fs):],
                                             w_speech[ti][0:int(t_stop*eeg_fs)]))
             # shift ABR for IHC and ANM regressor
-            if regressor in ['IHC', 'ANM']:
-                abr_music[ti] = np.roll(abr_music[ti], int(2.75*eeg_fs/1000))
+            if ('IHC' in regressor or 'ANM' in regressor) and IHC_delay:
+                abr_speech[ti] = np.roll(abr_speech[ti], int(IHC_delay*eeg_fs/1000))
         
         # %% bandpassing
-        abr_music_bp = dict(acoustic=np.zeros(8000),
-                            classical=np.zeros(8000),
-                            hiphop=np.zeros(8000),
-                            jazz=np.zeros(8000),
-                            metal=np.zeros(8000),
-                            pop=np.zeros(8000))
-        abr_music_ave = np.zeros(8000,)
+        abr_music_bp = dict(acoustic=np.zeros(t_samples),
+                            classical=np.zeros(t_samples),
+                            hiphop=np.zeros(t_samples),
+                            jazz=np.zeros(t_samples),
+                            metal=np.zeros(t_samples),
+                            pop=np.zeros(t_samples))
+        abr_music_ave = np.zeros(t_samples,)
         for ti in music_types:
             abr_music_bp[ti] = butter_bandpass_filter(abr_music[ti], 1, 1500, eeg_fs, order=1)
             abr_music_ave += abr_music_bp[ti]
         abr_music_ave = abr_music_ave / len(music_types)
         
-        abr_speech_bp = dict(chn_aud=np.zeros(8000),
-                            eng_aud=np.zeros(8000),
-                            interview=np.zeros(8000),
-                            lecture=np.zeros(8000),
-                            news=np.zeros(8000),
-                            talk=np.zeros(8000))
-        abr_speech_ave = np.zeros(8000,)
+        abr_speech_bp = dict(chn_aud=np.zeros(t_samples),
+                            eng_aud=np.zeros(t_samples),
+                            interview=np.zeros(t_samples),
+                            lecture=np.zeros(t_samples),
+                            news=np.zeros(t_samples),
+                            talk=np.zeros(t_samples))
+        abr_speech_ave = np.zeros(t_samples,)
         for ti in speech_types:
             abr_speech_bp[ti] = butter_bandpass_filter(abr_speech[ti], 1, 1500, eeg_fs, order=1)
             abr_speech_ave += abr_speech_bp[ti]
-        abr_speech_ave = abr_speech_ave / len(music_types)
-        
-        # write_hdf5('/' + subject + '_abr_response_' + regressor + '.hdf5',
-        #           dict(w_music=w_music, abr_music=abr_music,
-        #                 w_speech=w_speech, abr_speech=abr_speech,
-        #                 abr_music_ave=abr_music_ave, abr_speech_ave=abr_speech_ave,
-        #                 lags=lags), overwrite=True)
+        abr_speech_ave = abr_speech_ave / len(speech_types)
+
+        filename = exp_path + subject + '_abr_response_' + regressor + '.hdf5'
+        write_hdf5(filename,
+                  dict(w_music=w_music, abr_music=abr_music,
+                        w_speech=w_speech, abr_speech=abr_speech,
+                        abr_music_ave=abr_music_ave, abr_speech_ave=abr_speech_ave,
+                        lags=lags), overwrite=True)
         

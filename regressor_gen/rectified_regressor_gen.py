@@ -4,12 +4,15 @@
 Created on Fri Dec 16 13:32:21 2022
 
 @author: tshan@urmc-sh.rochester.edu
+
+This script can be used to create the half-wave rectified regressor.
 """
 import numpy as np
 import scipy.signal as signal
 import mne
 from numpy.fft import fft, ifft
 from expyfun.io import write_hdf5, read_hdf5, read_wav
+import os
 
 # %% Parameters
 # Stim param
@@ -17,15 +20,19 @@ stim_fs = 48000 # stimulus sampling frequency
 t_mus = 12 # music or speech trial length
 # EEG param
 eeg_fs = 10000 # eeg sampling frequency
-# %% File paths
-bids_root = '/Music_vs_Speech_ABR/' # EEG-BIDS root path
-audio_file_root = '/present_files/' # Present files root path
-regressor_root = '/regressors/'
 #%% Preprocess rectified x_in
 n_epoch = 40
 len_eeg = int(t_mus*eeg_fs)
 music_types = ["acoustic", "classical", "hiphop", "jazz", "metal", "pop"]
 speech_types = ["chn_aud", "eng_aud", "interview", "lecture", "news", "talk"]
+# %% File paths
+bids_root = '/hdd/data/ds004356/' # EEG-BIDS root path
+audio_file_root = bids_root + 'stimuli/' # Present files root path
+regressor_root = bids_root + 'regressors/' # Path to extract the regressors
+# Make folder if it doesn't exist
+if not os.path.exists(regressor_root + 'rect/'):
+    os.mkdir(regressor_root + 'rect/')
+
 # Music x_in
 x_in_music_pos = dict(acoustic=np.zeros((n_epoch, len_eeg)),
                       classical=np.zeros((n_epoch, len_eeg)),

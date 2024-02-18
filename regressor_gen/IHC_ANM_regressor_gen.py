@@ -4,15 +4,23 @@
 Created on Wed Mar 10 18:49:13 2021
 
 @author: tom, tong
+@contributor: fotisdr
+
+This script can be used to create the ANM regressor.
+It has only been tested with Python 2, where the cochlea 
+module can be installed and run reliably. 
+The ic_cn2018 script from the Verhulst2018 model needs to be
+included in the folder for scaling the AN responses. 
 """
 
 import numpy as np
-import cochlea
 from mne.filter import resample
 from joblib import Parallel, delayed
-import ic_cn2018 as nuclei
 import re
 from expyfun.io import read_wav, write_hdf5
+
+import cochlea
+import ic_cn2018 as nuclei
 
 # %% Define functions
 def findstring(ref, check):
@@ -32,19 +40,24 @@ def get_rates(stim_up, cf):
                                                 cihc=1))[:, 0])
 
 
-def anm(stim, fs_in, stim_pres_db, parallel=True, n_jobs=-1,
+def anm(stim, fs_in, stim_pres_db, parallel=True, n_jobs=-1, fs_up=100e3,
         stim_gen_rms=0.01, cf_low=125, cf_high=16e3, shift_cfs=False,
         shift_vals=None):
     """
+     fs_up: scalar
+        the sampling frequency of the AN model
+     stim_gen_rms: float
+        the RMS reference of the original stimulus
      shift_cfs: boolean
         shift each CF indpendently so maximum values align at zero
      shift_vals: array-like
         the values (in seconds) by which to shift each cf if shift_cfs == True
+
+     Returns the ANM firing rates summed across channels using the model sampling
+     frequency (fs_up). 
     """
     # Resample your stimuli to a higher fs for the model
-    fs_up = int(100e3)
     stim_up = resample(stim, fs_up, fs_in, npad='auto', n_jobs=n_jobs)
-
     # Put stim in correct units
     # scalar to put it in units of pascals (double-checked and good)
     sine_rms_at_0db = 20e-6
@@ -62,29 +75,22 @@ def anm(stim, fs_in, stim_pres_db, parallel=True, n_jobs=-1,
     else:
         for cfi, cf in enumerate(cfs):
             anf_rates_up[cfi] = get_rates(stim_up, cf)
+    # convert into a numpy array
+    anf_rates = np.array(anf_rates_up)
 
-    # Downsample to match input fs
-    anf_rates = resample(anf_rates_up, fs_in, fs_up, npad='auto',
-                         n_jobs=n_jobs)
-
+    # shift w1 by 1ms if not shifting each cf
+    final_shift = int(fs_up*0.001)
     # Optionally, shift each cf independently
-    final_shift = int(fs_in*0.001)  # shift w1 by 1ms if not shifting each cf
     if shift_cfs:
         final_shift = 0  # don't shift everything after aligning channels at 0
         if shift_vals is None:
             # default shift_cfs values (based on 75 dB click)
-            shift_vals = np.array([0.0046875, 0.0045625, 0.00447917,
-                                   0.00435417, 0.00422917, 0.00416667,
-                                   0.00402083, 0.0039375, 0.0038125, 0.0036875,
-                                   0.003625, 0.00354167, 0.00341667,
-                                   0.00327083, 0.00316667, 0.0030625,
-                                   0.00302083, 0.00291667, 0.0028125,
-                                   0.0026875, 0.00258333, 0.00247917,
-                                   0.00239583, 0.0023125, 0.00220833,
-                                   0.00210417, 0.00204167, 0.002, 0.001875,
-                                   0.00185417, 0.00175, 0.00170833, 0.001625,
-                                   0.0015625, 0.0015, 0.00147917, 0.0014375,
-                                   0.00135417, 0.0014375, 0.00129167,
+            shift_vals = np.array([0.0046875, 0.0045625, 0.00447917, 0.00435417, 0.00422917, 0.00416667,
+                                   0.00402083, 0.0039375, 0.0038125, 0.0036875, 0.003625, 0.00354167, 0.00341667,
+                                   0.00327083, 0.00316667, 0.0030625, 0.00302083, 0.00291667, 0.0028125,
+                                   0.0026875, 0.00258333, 0.00247917, 0.00239583, 0.0023125, 0.00220833,
+                                   0.00210417, 0.00204167, 0.002, 0.001875, 0.00185417, 0.00175, 0.00170833, 0.001625,
+                                   0.0015625, 0.0015, 0.00147917, 0.0014375, 0.00135417, 0.0014375, 0.00129167,
                                    0.00129167, 0.00125, 0.00122917])
 
         # Allow fewer CFs while still using defaults
@@ -109,7 +115,6 @@ def anm(stim, fs_in, stim_pres_db, parallel=True, n_jobs=-1,
     anm = np.roll(anm, final_shift)
     anm[:final_shift] = anm[final_shift+1]
     return(anm)
-
 
 def model_abr(stim, fs_in, stim_pres_db, parallel=True, n_jobs=-1,
               stim_gen_rms=0.01, cf_low=125, cf_high=16e3, return_flag='abr'):
@@ -231,24 +236,29 @@ def ihc(stim, fs_in, stim_pres_db, parallel=True, n_jobs=-1,
     
     return ihc_out_sum
     
-    
+
 # %% Parameters
 stim_fs = 48000
 stim_pres_db = 65
 t_mus = 12
 eeg_fs = 10000
 n_epoch = 40
-
-# %% File paths
-bids_root = '/Music_vs_Speech_ABR/' # EEG-BIDS root path
-audio_file_root = '/present_files/' # Present files root path
-regressor_root = '/regressors/'
+anm_fs = 100000 # sampling rate for the ANM model
+n_jobs = -1 # <= CPU cores for faster execution
 
 # %% Stim types
 music_types = ["acoustic", "classical", "hiphop", "jazz", "metal", "pop"]
 speech_types = ["chn_aud", "eng_aud", "interview", "lecture", "news", "talk"]
 
-# %% ANM regressir generation
+# %% File paths
+bids_root = '/hdd/data/ds004356/' # EEG-BIDS root path
+audio_file_root = bids_root + 'stimuli/' # Present files root path
+regressor_root = bids_root + 'regressors/' # Path to extract the regressors
+# Make folder if it doesn't exist
+if not os.path.exists(regressor_root + 'ANM/'):
+    os.mkdir(regressor_root + 'ANM/')
+    
+# # %% ANM regressir generation
 len_eeg = int(t_mus*eeg_fs)
 # Music x_in
 x_in_music_pos = dict(acoustic=np.zeros((n_epoch, len_eeg)),
@@ -270,14 +280,16 @@ for ti in music_types:
         temp, rt = read_wav(audio_file_root + ti + "/" +
                             ti + "{0:03d}".format(ei) + ".wav")
         temp = temp[0, :]
-        waves_pos = anm(temp, stim_fs, stim_pres_db)
-        waves_pos_resmp = resample(waves_pos, down=stim_fs/eeg_fs)
+        waves_pos = anm(temp, stim_fs, stim_pres_db, n_jobs=n_jobs)
+        # print('Derived ANM responses have shape: ',waves_pos.shape)
+        waves_pos_resmp = resample(waves_pos, down=anm_fs/eeg_fs) # resample as eeg_fs from the model sampling rate 
+        # print('ANM resampled responses have shape: ',waves_pos_resmp.shape)
         # Generate ANM
-        waves_neg = anm(-temp, stim_fs, stim_pres_db)
-        waves_neg_resmp = resample(waves_neg, down=stim_fs/eeg_fs) # resample as eeg_fs
-        
-        x_in_music_pos[ti][ei, :] = waves_pos_resmp
-        x_in_music_neg[ti][ei, :] = waves_neg_resmp
+        waves_neg = anm(-temp, stim_fs, stim_pres_db, n_jobs=n_jobs)
+        waves_neg_resmp = resample(waves_neg, down=anm_fs/eeg_fs) # resample as eeg_fs from the model sampling rate 
+        # Make sure the shapes are matched
+        x_in_music_pos[ti][ei, :] = waves_pos_resmp[:len_eeg]
+        x_in_music_neg[ti][ei, :] = waves_neg_resmp[:len_eeg]
         
 # Save regressor file
 write_hdf5(regressor_root + '/ANM/music_x_in.hdf5',
@@ -305,14 +317,14 @@ for ti in speech_types:
         temp, rt = read_wav(audio_file_root + ti + "/" +
                             ti + "{0:03d}".format(ei) + ".wav")
         temp = temp[0, :]
-        waves_pos = anm(temp, stim_fs, stim_pres_db)
-        waves_pos_resmp = resample(waves_pos, down=stim_fs/eeg_fs)
+        waves_pos = anm(temp, stim_fs, stim_pres_db, n_jobs=n_jobs)
+        waves_pos_resmp = resample(waves_pos, down=anm_fs/eeg_fs) # resample as eeg_fs from the model sampling rate 
         # Generate ANM
-        waves_neg = anm(-temp, stim_fs, stim_pres_db)
-        waves_neg_resmp = resample(waves_neg, down=stim_fs/eeg_fs) # resample as eeg_fs
-        
-        x_in_speech_pos[ti][ei, :] = waves_pos_resmp
-        x_in_speech_neg[ti][ei, :] = waves_neg_resmp
+        waves_neg = anm(-temp, stim_fs, stim_pres_db, n_jobs=n_jobs)
+        waves_neg_resmp = resample(waves_neg, down=anm_fs/eeg_fs) # resample as eeg_fs from the model sampling rate 
+        # Make sure the shapes are matched
+        x_in_speech_pos[ti][ei, :] = waves_pos_resmp[:len_eeg]
+        x_in_speech_neg[ti][ei, :] = waves_neg_resmp[:len_eeg]
         
 # Save regressor file
 write_hdf5(regressor_root + '/ANM/speech_x_in.hdf5',
@@ -320,73 +332,73 @@ write_hdf5(regressor_root + '/ANM/speech_x_in.hdf5',
                 x_in_speech_neg=x_in_speech_neg,
                 fs=eeg_fs), overwrite=True)
 
-#%% IHC regressir generation
-# Music x_in
-x_in_music_pos = dict(acoustic=np.zeros((n_epoch, len_eeg)),
-                      classical=np.zeros((n_epoch, len_eeg)),
-                      hiphop=np.zeros((n_epoch, len_eeg)),
-                      jazz=np.zeros((n_epoch, len_eeg)),
-                      metal=np.zeros((n_epoch, len_eeg)),
-                      pop=np.zeros((n_epoch, len_eeg)))
-x_in_music_neg = dict(acoustic=np.zeros((n_epoch, len_eeg)),
-                      classical=np.zeros((n_epoch, len_eeg)),
-                      hiphop=np.zeros((n_epoch, len_eeg)),
-                      jazz=np.zeros((n_epoch, len_eeg)),
-                      metal=np.zeros((n_epoch, len_eeg)),
-                      pop=np.zeros((n_epoch, len_eeg)))
-for ti in music_types:
-    for ei in range(n_epoch):
-        print(ti, ei)
-        # Load wav file +/-
-        temp, rt = read_wav(audio_file_root + ti + "/" +
-                            ti + "{0:03d}".format(ei) + ".wav")
-        temp = temp[0, :]
-        waves_pos = ihc(temp, stim_fs, stim_pres_db)
-        waves_pos_resmp = resample(waves_pos, down=stim_fs/eeg_fs)
-        # Generate IHC
-        waves_neg = ihc(-temp, stim_fs, stim_pres_db)
-        waves_neg_resmp = resample(waves_neg, down=stim_fs/eeg_fs)  # resample as eeg_fs
+# #%% IHC regressor generation
+# # Music x_in
+# x_in_music_pos = dict(acoustic=np.zeros((n_epoch, len_eeg)),
+#                       classical=np.zeros((n_epoch, len_eeg)),
+#                       hiphop=np.zeros((n_epoch, len_eeg)),
+#                       jazz=np.zeros((n_epoch, len_eeg)),
+#                       metal=np.zeros((n_epoch, len_eeg)),
+#                       pop=np.zeros((n_epoch, len_eeg)))
+# x_in_music_neg = dict(acoustic=np.zeros((n_epoch, len_eeg)),
+#                       classical=np.zeros((n_epoch, len_eeg)),
+#                       hiphop=np.zeros((n_epoch, len_eeg)),
+#                       jazz=np.zeros((n_epoch, len_eeg)),
+#                       metal=np.zeros((n_epoch, len_eeg)),
+#                       pop=np.zeros((n_epoch, len_eeg)))
+# for ti in music_types:
+#     for ei in range(n_epoch):
+#         print(ti, ei)
+#         # Load wav file +/-
+#         temp, rt = read_wav(audio_file_root + ti + "/" +
+#                             ti + "{0:03d}".format(ei) + ".wav")
+#         temp = temp[0, :]
+#         waves_pos = ihc(temp, stim_fs, stim_pres_db, n_jobs=n_jobs)
+#         waves_pos_resmp = resample(waves_pos, down=stim_fs/eeg_fs)
+#         # Generate IHC
+#         waves_neg = ihc(-temp, stim_fs, stim_pres_db, n_jobs=n_jobs)
+#         waves_neg_resmp = resample(waves_neg, down=stim_fs/eeg_fs)  # resample as eeg_fs
         
-        x_in_music_pos[ti][ei, :] = waves_pos_resmp
-        x_in_music_neg[ti][ei, :] = waves_neg_resmp
-        
-# Save regressor file
-write_hdf5(regressor_root + '/IHC/music_x_in.hdf5',
-           dict(x_in_music_pos=x_in_music_pos,
-                x_in_music_neg=x_in_music_neg,
-                fs=eeg_fs), overwrite=True)
+#         x_in_music_pos[ti][ei, :] = waves_pos_resmp[:len_eeg]
+#         x_in_music_neg[ti][ei, :] = waves_neg_resmp[:len_eeg]
+    
+# # Save regressor file
+# write_hdf5(regressor_root + '/IHC/music_x_in.hdf5',
+#            dict(x_in_music_pos=x_in_music_pos,
+#                 x_in_music_neg=x_in_music_neg,
+#                 fs=eeg_fs), overwrite=True)
 
-# Speech x_in
-x_in_speech_pos = dict(chn_aud=np.zeros((n_epoch, len_eeg)),
-                       eng_aud=np.zeros((n_epoch, len_eeg)),
-                       interview=np.zeros((n_epoch, len_eeg)),
-                       lecture=np.zeros((n_epoch, len_eeg)),
-                       news=np.zeros((n_epoch, len_eeg)),
-                       talk=np.zeros((n_epoch, len_eeg)))
-x_in_speech_neg = dict(chn_aud=np.zeros((n_epoch, len_eeg)),
-                       eng_aud=np.zeros((n_epoch, len_eeg)),
-                       interview=np.zeros((n_epoch, len_eeg)),
-                       lecture=np.zeros((n_epoch, len_eeg)),
-                       news=np.zeros((n_epoch, len_eeg)),
-                       talk=np.zeros((n_epoch, len_eeg)))
-for ti in speech_types:
-    for ei in range(n_epoch):
-        print(ti, ei)
-        # Load wav file +/-
-        temp, rt = read_wav(audio_file_root + ti + "/" +
-                            ti + "{0:03d}".format(ei) + ".wav")
-        temp = temp[0, :]
-        waves_pos = ihc(temp, stim_fs, stim_pres_db)
-        waves_pos_resmp = resample(waves_pos, down=stim_fs/eeg_fs)
-        # Generate IHC
-        waves_neg = ihc(-temp, stim_fs, stim_pres_db)
-        waves_neg_resmp = resample(waves_neg, down=stim_fs/eeg_fs)  # resample as eeg_fs
+# # Speech x_in
+# x_in_speech_pos = dict(chn_aud=np.zeros((n_epoch, len_eeg)),
+#                        eng_aud=np.zeros((n_epoch, len_eeg)),
+#                        interview=np.zeros((n_epoch, len_eeg)),
+#                        lecture=np.zeros((n_epoch, len_eeg)),
+#                        news=np.zeros((n_epoch, len_eeg)),
+#                        talk=np.zeros((n_epoch, len_eeg)))
+# x_in_speech_neg = dict(chn_aud=np.zeros((n_epoch, len_eeg)),
+#                        eng_aud=np.zeros((n_epoch, len_eeg)),
+#                        interview=np.zeros((n_epoch, len_eeg)),
+#                        lecture=np.zeros((n_epoch, len_eeg)),
+#                        news=np.zeros((n_epoch, len_eeg)),
+#                        talk=np.zeros((n_epoch, len_eeg)))
+# for ti in speech_types:
+#     for ei in range(n_epoch):
+#         print(ti, ei)
+#         # Load wav file +/-
+#         temp, rt = read_wav(audio_file_root + ti + "/" +
+#                             ti + "{0:03d}".format(ei) + ".wav")
+#         temp = temp[0, :]
+#         waves_pos = ihc(temp, stim_fs, stim_pres_db, n_jobs=n_jobs)
+#         waves_pos_resmp = resample(waves_pos, down=stim_fs/eeg_fs)
+#         # Generate IHC
+#         waves_neg = ihc(-temp, stim_fs, stim_pres_db, n_jobs=n_jobs)
+#         waves_neg_resmp = resample(waves_neg, down=stim_fs/eeg_fs)  # resample as eeg_fs
         
-        x_in_speech_pos[ti][ei, :] = waves_pos_resmp
-        x_in_speech_neg[ti][ei, :] = waves_neg_resmp
+#         x_in_speech_pos[ti][ei, :] = waves_pos_resmp[:len_eeg]
+#         x_in_speech_neg[ti][ei, :] = waves_neg_resmp[:len_eeg]
         
-# Save regressor file
-write_hdf5(regressor_root + '/IHC/speech_x_in.hdf5',
-           dict(x_in_speech_pos=x_in_speech_pos,
-                x_in_speech_neg=x_in_speech_neg,
-                fs=eeg_fs), overwrite=True)
+# # Save regressor file
+# write_hdf5(regressor_root + '/IHC/speech_x_in.hdf5',
+#            dict(x_in_speech_pos=x_in_speech_pos,
+#                 x_in_speech_neg=x_in_speech_neg,
+#                 fs=eeg_fs), overwrite=True)
